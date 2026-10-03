@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WhatsApp Web JSON Exporter
 // @namespace    https://github.tools.sap/I771869/whatsappexporter
-// @version      0.2.1
+// @version      0.2.2
 // @description  Export all WhatsApp Web chats as JSON (ZIP) or by automating WhatsApp's native per-chat export.
 // @author       I771869
 // @match        https://web.whatsapp.com/*
@@ -45,7 +45,7 @@
     cmd: 'WAWebCmd',
   };
 
-  const VERSION = '0.2.1';
+  const VERSION = '0.2.2';
   const DEV = /[?#&]waexport=dev/.test(location.href);
   const FORCE = (location.href.match(/[?#&]waexport=(raid|dom)/) || [])[1] || null;
 
@@ -93,19 +93,27 @@
 
   const isVisible = (el) => !!el && el.offsetParent !== null;
 
-  // First visible actionable element whose text contains `text` (ci).
-  const findByText = (text, roots = [document]) => {
+  // Nearest clickable ancestor (or self) for an element matched by its text —
+  // WhatsApp wraps labels in <span>s whose real button is a div[role=button].
+  const clickable = (el) => (el && (el.closest('[role="button"],[role="menuitem"],button,[data-testid]') || el)) || null;
+
+  // Visible actionable element whose text matches `text`. Prefers an EXACT
+  // (trimmed, ci) match over a substring one, so "Export" doesn't accidentally
+  // return the "Export chat" row. Returns the nearest clickable ancestor.
+  const findByText = (text, roots = [document], { exact = false } = {}) => {
     const needle = String(text).toLowerCase();
-    const sel = '[role="button"],[role="menuitem"],button,li,[data-testid]';
+    const sel = '[role="button"],[role="menuitem"],button,li,span,div[data-testid]';
+    let substr = null;
     for (const root of roots) {
       if (!root || typeof root.querySelectorAll !== 'function') continue;
-      const nodes = root.querySelectorAll(sel);
-      for (const n of nodes) {
+      for (const n of root.querySelectorAll(sel)) {
         if (!isVisible(n)) continue;
-        if ((n.textContent || '').trim().toLowerCase().includes(needle)) return n;
+        const t = (n.textContent || '').trim().toLowerCase();
+        if (t === needle) return clickable(n);
+        if (!exact && !substr && t.includes(needle)) substr = clickable(n);
       }
     }
-    return null;
+    return exact ? null : substr;
   };
 
   // ---------------------------------------------------------------------------
@@ -748,17 +756,24 @@
   async function nativeExportOpenChat() {
     const entry = await findExportEntry();
     clickReal(entry);
-    // WhatsApp asks "Include media?" — choose "Without media" (text-only, lighter).
+    // A confirmation dialog opens. Depending on the build it's either a
+    // "Without media" / "With media" pair, or a single "Export" button
+    // (sometimes with a media toggle). Click the first of these that appears,
+    // scoped to the visible dialog so we don't re-hit the "Export chat" row.
     const dialogs = () => {
       const d = Array.from(document.querySelectorAll('[role="dialog"],[data-animate-modal-popup]')).filter(isVisible);
       return d.length ? d : [document];
     };
+    const findConfirm = () =>
+      findByText('without media', dialogs()) ||
+      findByText('export', dialogs(), { exact: true }) ||
+      null;
     let choice;
     try {
-      choice = await waitFor(() => findByText('without media', dialogs()), 6000);
+      choice = await waitFor(findConfirm, 6000);
     } catch (e) {
       probeExportDom('media-dialog');
-      throw new Error('"Without media" button not found after clicking Export chat');
+      throw new Error('export confirm button ("Without media"/"Export") not found');
     }
     clickReal(choice);
     // The download is not observable from the page — settle, then move on.

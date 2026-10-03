@@ -35,9 +35,9 @@ The JSON mode above is limited by what WhatsApp Web keeps in memory — deep his
 What you get and the trade-offs:
 
 - **Output is N separate ZIPs, named by WhatsApp**, dropped straight into your browser's **download folder**. The script cannot rename them or bundle them into one archive. It does download a small `whatsapp-native-export-index_<timestamp>.json` recording which chats it triggered (and any it skipped).
-- The native ZIPs are **media-inclusive but not clean JSON** — they're WhatsApp's own `.txt` + attachments format. (The script chooses **"Without media"** to keep them light; this is text-only.)
+- The native ZIPs are WhatsApp's own `.txt` + attachments format, **not clean JSON**. On the confirmation dialog the script clicks **"Without media"** when that option is offered, otherwise the single **"Export"** button (whose output may include media, depending on your WhatsApp build).
 - **It sends read receipts.** Opening each chat marks it read — unavoidable in this mode, unlike the read-only JSON mode. A warning is logged at the start of every native run.
-- **English UI only.** It matches the buttons by visible text ("Export chat", "Without media"), so a non-English WhatsApp locale will cause chats to be skipped. Switch WhatsApp Web to English first.
+- **English UI only.** It matches the buttons by visible text ("Export chat", "Without media"/"Export"), so a non-English WhatsApp locale will cause chats to be skipped. Switch WhatsApp Web to English first.
 - Chrome shows a **one-time "Allow multiple downloads"** prompt on the first ZIP of an "all" run — click Allow.
 - ⚠️ **Turn off Chrome's "Ask where to save each file before downloading"** (Settings → Downloads) *before* running. If it's on, Chrome opens a **Save As** dialog for every ZIP — including WhatsApp's own export when clicked by hand — and the run pauses on each one. This is browser chrome the script cannot click; the only fix is the setting. With it off, ZIPs save straight to your download folder and the run flows automatically.
 - The page can't tell when a native download finishes, so pacing is a fixed settle delay — it **reuses the Rate limit slider**. On a slow disk or for very large chats, raise the slider if downloads get dropped.
