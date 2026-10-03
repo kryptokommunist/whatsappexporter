@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WhatsApp Web JSON Exporter
 // @namespace    https://github.tools.sap/I771869/whatsappexporter
-// @version      0.1.3
+// @version      0.1.4
 // @description  Export all WhatsApp Web chats + full history as a ZIP of per-chat JSON files.
 // @author       I771869
 // @match        https://web.whatsapp.com/*
@@ -44,7 +44,7 @@
     loadMessages: 'WAWebChatLoadMessages',
   };
 
-  const VERSION = '0.1.3';
+  const VERSION = '0.1.4';
   const DEV = /[?#&]waexport=dev/.test(location.href);
   const FORCE = (location.href.match(/[?#&]waexport=(raid|dom)/) || [])[1] || null;
 
@@ -137,6 +137,7 @@
       Contact: col.Contact,
       GroupMetadata: col.GroupMetadata,
       loadEarlierMsgs,
+      pagerMod,
       req,
     };
   }
@@ -201,6 +202,7 @@
       Contact: contactCol || null,
       GroupMetadata: groupCol || null,
       loadEarlierMsgs: pagerMod ? pagerMod.loadEarlierMsgs : null,
+      pagerMod: pagerMod || null,
       req: PAGE.require,
     };
   }
@@ -337,8 +339,20 @@
 
   async function pageOnce(chat, store) {
     const col = chat.msgs;
+    const mod = store.pagerMod || null;
+    const fn = store.loadEarlierMsgs || null;
     const run = async () => {
-      if (store.loadEarlierMsgs) return store.loadEarlierMsgs(chat);
+      // Current WhatsApp Web: the loader lives on a module and reads
+      // chat.msgs.msgLoadState internally, so it must be called *bound to its
+      // module* (an unbound detached fn loses `this` and throws on
+      // `pendingInitialLoading`). Try the most correct shapes in order.
+      // 1) chat model's own method (most stable across builds)
+      if (typeof chat.loadEarlierMsgs === 'function') return chat.loadEarlierMsgs();
+      // 2) module function, correctly bound, taking the chat model
+      if (mod && typeof mod.loadEarlierMsgs === 'function') return mod.loadEarlierMsgs.call(mod, chat);
+      // 3) detached fn (fallback; may work on older builds)
+      if (fn) return fn(chat);
+      // 4) collection method
       if (col && typeof col.loadEarlierMsgs === 'function') return col.loadEarlierMsgs();
       throw new Error('no pager available');
     };
@@ -349,7 +363,26 @@
     ]);
   }
 
+  let pagerProbed = false;
+  function probePager(chat, store) {
+    if (pagerProbed) return;
+    pagerProbed = true;
+    try {
+      const col = chat.msgs;
+      Log.info('[probe] chat methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(chat) || {})
+        .filter((k) => /load|msg|earlier|fetch/i.test(k)).join(','));
+      Log.info('[probe] chat.loadEarlierMsgs is', typeof chat.loadEarlierMsgs);
+      Log.info('[probe] chat.msgs is', col ? col.constructor && col.constructor.name : 'none',
+        '| msgLoadState:', col && col.msgLoadState ? safeJson(col.msgLoadState) : 'undefined');
+      Log.info('[probe] col.loadEarlierMsgs is', col && typeof col.loadEarlierMsgs);
+      Log.info('[probe] store.pagerMod keys:', store.pagerMod
+        ? Object.keys(store.pagerMod).join(',') : 'none');
+      Log.info('[probe] store.loadEarlierMsgs is', typeof store.loadEarlierMsgs);
+    } catch (e) { Log.warn('[probe] failed', e); }
+  }
+
   async function loadFullHistory(chat, store, onProgress) {
+    probePager(chat, store);
     let prevCount = -1;
     let stagnant = 0;
     let pages = 0;
@@ -793,11 +826,18 @@
     // read JSZip back from whichever one it used.
     const sandbox = {};
     const mod = { exports: {} };
+    // JSZip's async engine calls the global `setImmediate` (it only polyfills
+    // one when it can see a global to attach it to — which our captured sandbox
+    // hides, so generateAsync() would throw "setImmediate is not defined").
+    // Inject a browser polyfill into the factory's scope so it resolves.
+    const setImmediatePolyfill = (typeof setImmediate === 'function')
+      ? setImmediate
+      : (fn, ...a) => setTimeout(() => fn(...a), 0);
     const factory = new Function(
-      'module', 'exports', 'self', 'window', 'globalThis',
+      'module', 'exports', 'self', 'window', 'globalThis', 'setImmediate',
       src + '\n;return module.exports && (module.exports.loadAsync || module.exports.prototype) ? module.exports : (this.JSZip || self.JSZip || window.JSZip || globalThis.JSZip || null);'
     );
-    const Z = factory.call(sandbox, mod, mod.exports, sandbox, sandbox, sandbox)
+    const Z = factory.call(sandbox, mod, mod.exports, sandbox, sandbox, sandbox, setImmediatePolyfill)
       || sandbox.JSZip || mod.exports.JSZip || null;
     if (!Z || typeof Z !== 'function') throw new Error('JSZip failed to initialize from resource.');
     return Z;
