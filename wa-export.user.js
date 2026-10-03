@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WhatsApp Web JSON Exporter
 // @namespace    https://github.com/kryptokommunist/whatsappexporter
-// @version      0.2.7
+// @version      0.2.8
 // @description  Export all WhatsApp Web chats as JSON (ZIP) or by automating WhatsApp's native per-chat export.
 // @author       I771869
 // @icon         https://raw.githubusercontent.com/kryptokommunist/whatsappexporter/main/docs/logo.png
@@ -46,7 +46,7 @@
     cmd: 'WAWebCmd',
   };
 
-  const VERSION = '0.2.7';
+  const VERSION = '0.2.8';
   const DEV = /[?#&]waexport=dev/.test(location.href);
   const FORCE = (location.href.match(/[?#&]waexport=(raid|dom)/) || [])[1] || null;
 
@@ -723,6 +723,14 @@
     domProbes++;
     try {
       const header = document.querySelector('header[data-testid="conversation-header"]') || document.querySelector('header');
+      // Also dump the contents of any open menu/popup so we can see exactly
+      // which actions the header "⋮" offers in this build.
+      const popups = Array.from(document.querySelectorAll('[role="menu"],[role="application"],[data-animate-dropdown-expand],[data-testid*="menu" i]')).filter(isVisible);
+      const menuItems = popups.flatMap((p) =>
+        Array.from(p.querySelectorAll('[role="menuitem"],li,button,[role="button"]'))
+          .filter(isVisible)
+          .map((n) => ({ in: 'menu', text: (n.textContent || '').trim().slice(0, 32) }))
+          .filter((o) => o.text));
       const btns = Array.from(document.querySelectorAll('[role="button"],button,[data-testid],[aria-label]'))
         .filter(isVisible)
         .map((n) => ({
@@ -731,8 +739,9 @@
           aria: n.getAttribute('aria-label') || '',
           text: (n.textContent || '').trim().slice(0, 24),
         }))
-        .filter((o) => /export|menu|more|profile|info|details|without|with media|media|continue|cancel|modal/i.test(o.testid + o.aria + o.text));
-      Log.info(`[probe:${where}] header present: ${!!header}; candidate controls:`, safeJson(btns.slice(0, 25)));
+        .filter((o) => /export|menu|more|profile|info|details|without|with media|media|continue|cancel|modal/i.test(o.testid + o.aria + o.text))
+        .concat(menuItems);
+      Log.info(`[probe:${where}] header present: ${!!header}; menu items: ${menuItems.length}; candidate controls:`, safeJson(btns.slice(0, 40)));
     } catch (e) { Log.warn('[probe] dom dump failed', e); }
   }
 
@@ -747,28 +756,49 @@
     let hit = findItem();
     if (hit) return hit;
 
-    // (1) Open the contact-info / profile drawer. Try test-id, aria-label, then
-    // any visible control that reads "Profile details"/"Contact info" anywhere.
-    const header = document.querySelector('header[data-testid="conversation-header"]') || document.querySelector('header');
+    // The CONVERSATION header (right column), NOT the chat-list header (left
+    // column). Both contain an aria="Menu" overflow button, so we must scope to
+    // the conversation header or we'd open the wrong "⋮".
+    const header =
+      document.querySelector('header[data-testid="conversation-header"]') ||
+      // the header that contains the open-chat info opener / title
+      (document.querySelector('[data-testid="conversation-info-header"]') || {}).closest?.('header') ||
+      document.querySelector('#main header') ||
+      document.querySelector('header');
+
+    // (1) PRIMARY in this build: the header overflow "⋮" menu. Every live probe
+    // shows <button aria-label="Menu"> (icon "ic-more-vert") in the conversation
+    // header, and the drawer carries no export row — so try the menu first.
+    const menuOpener = header && (
+      header.querySelector('[data-testid="menu"]') ||
+      header.querySelector('button[aria-label="Menu" i]') ||
+      header.querySelector('[aria-label="Menu" i]') ||
+      header.querySelector('[aria-label="More options" i]') ||
+      header.querySelector('[aria-label*="menu" i]') ||
+      header.querySelector('[data-icon="menu"],[data-icon="more-refreshed"],[data-icon="more-refreshed-20"]'));
+    if (menuOpener) {
+      clickReal(menuOpener.closest('[role="button"],button') || menuOpener);
+      try { return await waitFor(findItem, 2500); } catch {}
+      // Not in this menu — dismiss it so it doesn't shadow the drawer path.
+      dispatchKey('Escape');
+      await sleep(150);
+    }
+
+    // (2) Fallback: open the contact-info / profile drawer and scroll it. Some
+    // builds place "Export chat" near the BOTTOM of the lazy-rendered drawer.
     const infoOpener =
       (header && (header.querySelector('[data-testid="conversation-info-header"]') ||
-                  header.querySelector('[aria-label="Profile details"]') ||
+                  header.querySelector('[aria-label="Profile details" i]') ||
                   header.querySelector('[aria-label*="info" i]') ||
                   header.querySelector('[aria-label*="profile" i]'))) ||
       findByText('contact info') || null;
     if (infoOpener) {
       clickReal(infoOpener);
-      // Wait for the drawer to appear, then look for the export row.
-      try { return await waitFor(findItem, 3000); } catch {}
-      // The "Export chat" row lives near the BOTTOM of the (contact / group /
-      // community) info drawer, which WhatsApp lazy-renders — it isn't in the
-      // DOM until scrolled into view. Scroll the drawer body down in steps and
-      // re-check after each step before concluding there's no export option.
+      try { return await waitFor(findItem, 2500); } catch {}
       const drawer = document.querySelector('[data-testid="chat-info-drawer"],[data-testid="drawer-right"],[data-testid="community-tabbed-info-drawer"]');
       if (drawer && isVisible(drawer)) {
         const scroller =
           drawer.querySelector('[data-testid="contact-info-drawer-body"],[data-testid="group-info-drawer-body"],[data-testid="community-tabbed-info-drawer-body"]') ||
-          // else the deepest scrollable element inside the drawer
           Array.from(drawer.querySelectorAll('*')).find((n) => n.scrollHeight > n.clientHeight + 20) ||
           drawer;
         for (let step = 0; step < 12; step++) {
@@ -778,30 +808,16 @@
           scroller.scrollTop = Math.min(scroller.scrollTop + scroller.clientHeight * 0.9 + 400, scroller.scrollHeight);
           scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
           await sleep(180);
-          // Reached the bottom and nothing new rendered — stop scrolling.
           if (scroller.scrollTop === before && step > 0) break;
         }
         hit = findItem();
         if (hit) return hit;
-        probeExportDom('no-export-in-drawer');
-        throw new Error('no "Export chat" option for this chat (likely a system/business chat)');
       }
     }
 
-    // (2) Fallback: header overflow "⋮" menu, then "Export chat" in the popup.
-    const menuOpener = header && (
-      header.querySelector('[data-testid="menu"]') ||
-      header.querySelector('[aria-label="Menu"]') ||
-      header.querySelector('[aria-label="More options"]') ||
-      header.querySelector('[aria-label*="menu" i]') ||
-      header.querySelector('[data-icon="menu"],[data-icon="more-refreshed"]'));
-    if (menuOpener) {
-      clickReal(menuOpener.closest('[role="button"],button') || menuOpener);
-      try { return await waitFor(findItem, 5000); } catch {}
-    }
-
+    // Both the header "⋮" menu and the info drawer were opened and exhausted.
     probeExportDom('entry');
-    throw new Error('export entry not found (opened drawer/menu but no "Export chat")');
+    throw new Error('no "Export chat" option found (checked header menu + info drawer)');
   }
 
   // The visible confirmation modal(s). Current builds use
