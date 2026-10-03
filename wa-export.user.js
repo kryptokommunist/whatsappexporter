@@ -4,6 +4,7 @@
 // @version      0.2.7
 // @description  Export all WhatsApp Web chats as JSON (ZIP) or by automating WhatsApp's native per-chat export.
 // @author       I771869
+// @icon         https://raw.githubusercontent.com/kryptokommunist/whatsappexporter/main/docs/logo.png
 // @match        https://web.whatsapp.com/*
 // @run-at       document-idle
 // @grant        GM_download

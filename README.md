@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="WhatsApp Web JSON Exporter Logo" width="220" />
+</p>
+
 # WhatsApp Web JSON Exporter
 
 A single [Tampermonkey](https://www.tampermonkey.net/) / Violentmonkey **userscript** that exports your WhatsApp Web chats, straight from `web.whatsapp.com` in Chrome. It offers two modes:
