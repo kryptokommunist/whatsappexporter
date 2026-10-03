@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WhatsApp Web JSON Exporter
 // @namespace    https://github.tools.sap/I771869/whatsappexporter
-// @version      0.2.3
+// @version      0.2.4
 // @description  Export all WhatsApp Web chats as JSON (ZIP) or by automating WhatsApp's native per-chat export.
 // @author       I771869
 // @match        https://web.whatsapp.com/*
@@ -45,7 +45,7 @@
     cmd: 'WAWebCmd',
   };
 
-  const VERSION = '0.2.3';
+  const VERSION = '0.2.4';
   const DEV = /[?#&]waexport=dev/.test(location.href);
   const FORCE = (location.href.match(/[?#&]waexport=(raid|dom)/) || [])[1] || null;
 
@@ -637,9 +637,17 @@
     if (!ui.cancelled) Log.clearPersisted();
   }
 
+  // Count how many of the chats in the store are archived. Archived chats are
+  // ordinary models in the Chat collection (archive flag set), so they are
+  // already included in getModelsArray() — this is just for a visible count so
+  // you can tell whether WhatsApp has synced the archived list into memory yet.
+  const archivedCount = (chats) => chats.reduce((n, c) => n + (c.archive ? 1 : 0), 0);
+
   async function exportAll(store, ui) {
     const chats = store.Chat.getModelsArray().slice();
-    Log.info(`Exporting all ${chats.length} chats…`);
+    const arch = archivedCount(chats);
+    Log.info(`Exporting all ${chats.length} chats (${arch} archived)…`);
+    if (arch === 0) Log.warn('No archived chats found in the store. If you have archived chats, open WhatsApp\'s "Archived" view once so they sync into memory, then run again.');
     await exportChats(store, chats, ui);
   }
 
@@ -834,7 +842,7 @@
       let name;
       try { name = chatToMeta(chat, store).name; } catch { name = widStr(chat.id) || `chat-${i}`; }
       ui.setChat(i + 1, name);
-      const rec = { id: widStr(chat.id), name, isGroup: !!chat.isGroup, status: 'triggered', ts: nowIso() };
+      const rec = { id: widStr(chat.id), name, isGroup: !!chat.isGroup, archived: !!chat.archive, status: 'triggered', ts: nowIso() };
 
       try {
         await openChatModel(store, chat);
@@ -852,6 +860,7 @@
 
     index.cancelled = ui.cancelled;
     index.triggeredCount = index.chats.filter((c) => c.status === 'triggered').length;
+    index.archivedCount = index.chats.filter((c) => c.archived).length;
     const secs = Math.round((Date.now() - t0) / 1000);
     Log.info(`Native export complete: ${index.triggeredCount}/${chats.length} triggered, ${secs}s`);
 
@@ -869,7 +878,9 @@
       return;
     }
     const chats = store.Chat.getModelsArray().slice();
-    Log.info(`Native-exporting all ${chats.length} chats…`);
+    const arch = archivedCount(chats);
+    Log.info(`Native-exporting all ${chats.length} chats (${arch} archived)…`);
+    if (arch === 0) Log.warn('No archived chats found in the store. If you have archived chats, open WhatsApp\'s "Archived" view once so they sync into memory, then run again.');
     await exportChatsNative(store, chats, ui);
   }
 

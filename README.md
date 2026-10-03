@@ -30,7 +30,9 @@ A single [Tampermonkey](https://www.tampermonkey.net/) / Violentmonkey **userscr
 The JSON mode above is limited by what WhatsApp Web keeps in memory — deep history often lives only on your phone, so some chats export with very few messages. For a **complete** archive, tick **Use WhatsApp native export (ZIPs)** and the two export buttons instead automate WhatsApp's own per-chat **"Export chat"** feature:
 
 - **Export current chat** triggers the native export for the open conversation.
-- **Export all chats** opens every chat in turn (programmatically, via WhatsApp's own chat-open command — no scrolling the list) and triggers the native export for each.
+- **Export all chats** opens every chat in turn (programmatically, via WhatsApp's own chat-open command — no scrolling the list) and triggers the native export for each. **Archived chats are included** — they're ordinary chats in WhatsApp's data, so opening each one by WhatsApp's own command works the same whether it's archived or not. The log and the index JSON report how many archived chats were included (`archivedCount`).
+
+> If the archived count is **0** but you do have archived chats, WhatsApp hasn't synced its archived list into the page's memory yet. Open WhatsApp's **Archived** view once (so the list loads), then run the export again.
 
 What you get and the trade-offs:
 
