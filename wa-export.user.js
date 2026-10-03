@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         WhatsApp Web JSON Exporter
 // @namespace    https://github.tools.sap/I771869/whatsappexporter
-// @version      0.1.4
-// @description  Export all WhatsApp Web chats + full history as a ZIP of per-chat JSON files.
+// @version      0.2.0
+// @description  Export all WhatsApp Web chats as JSON (ZIP) or by automating WhatsApp's native per-chat export.
 // @author       I771869
 // @match        https://web.whatsapp.com/*
 // @run-at       document-idle
@@ -42,14 +42,70 @@
   const KNOWN_NAMES = {
     collections: 'WAWebCollections',
     loadMessages: 'WAWebChatLoadMessages',
+    cmd: 'WAWebCmd',
   };
 
-  const VERSION = '0.1.4';
+  const VERSION = '0.2.0';
   const DEV = /[?#&]waexport=dev/.test(location.href);
   const FORCE = (location.href.match(/[?#&]waexport=(raid|dom)/) || [])[1] || null;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const nowIso = () => new Date().toISOString();
+
+  // ---------------------------------------------------------------------------
+  // DOM automation primitives (native-export mode). WhatsApp Web renders a
+  // virtualized chat list and ignores bare .click(), so these drive the real
+  // UI the way a user would: wait for an element to appear, then fire a full
+  // pointer+mouse event sequence. They match elements by stable test-ids,
+  // ARIA labels, and visible text — never by obfuscated CSS class hashes.
+  // ---------------------------------------------------------------------------
+  const waitFor = (fn, timeoutMs = 6000, every = 150) => new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    (function tick() {
+      let v = null;
+      try { v = fn(); } catch {}
+      if (v) return resolve(v);
+      if (Date.now() - t0 > timeoutMs) return reject(new Error('waitFor timeout'));
+      setTimeout(tick, every);
+    })();
+  });
+
+  const clickReal = (el) => {
+    if (!el) return false;
+    const opts = { bubbles: true, cancelable: true, view: PAGE };
+    for (const type of ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      try {
+        const Ev = /^pointer/.test(type) && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+        el.dispatchEvent(new Ev(type, opts));
+      } catch {}
+    }
+    return true;
+  };
+
+  const dispatchKey = (key = 'Escape') => {
+    for (const target of [document.activeElement, document.body]) {
+      if (!target) continue;
+      for (const type of ['keydown', 'keyup']) {
+        try { target.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true, cancelable: true })); } catch {}
+      }
+    }
+  };
+
+  const isVisible = (el) => !!el && el.offsetParent !== null;
+
+  // First visible actionable element whose text contains `text` (ci).
+  const findByText = (text, roots = [document]) => {
+    const needle = String(text).toLowerCase();
+    for (const root of roots) {
+      if (!root || typeof root.querySelectorAll !== 'function') continue;
+      const nodes = root.querySelectorAll('[role="button"],button,[data-testid]');
+      for (const n of nodes) {
+        if (!isVisible(n)) continue;
+        if ((n.textContent || '').trim().toLowerCase().includes(needle)) return n;
+      }
+    }
+    return null;
+  };
 
   // ---------------------------------------------------------------------------
   // Logger. Keeps an in-memory ring buffer (→ _log.txt in the ZIP on a clean
@@ -130,6 +186,8 @@
       ? pagerMod.loadEarlierMsgs
       : null;
 
+    const cmdMod = safeRequire(req, KNOWN_NAMES.cmd);
+
     return {
       source: 'named',
       Chat: col.Chat,
@@ -138,6 +196,7 @@
       GroupMetadata: col.GroupMetadata,
       loadEarlierMsgs,
       pagerMod,
+      Cmd: cmdMod && cmdMod.Cmd ? cmdMod.Cmd : null,
       req,
     };
   }
@@ -192,6 +251,7 @@
     const contactCol = mR.findModule((c) => isCollection(c) && has(firstModel(c), ['isMe', 'isWAContact']))[0];
     const groupCol = mR.findModule((c) => isCollection(c) && has(firstModel(c), ['participants']))[0];
     const pagerMod = mR.findModule((m) => typeof m.loadEarlierMsgs === 'function')[0];
+    const cmdMod = mR.findModule((m) => m && m.Cmd && m.CmdImpl)[0];
 
     if (!chatCol || !msgCol) return null;
 
@@ -203,6 +263,7 @@
       GroupMetadata: groupCol || null,
       loadEarlierMsgs: pagerMod ? pagerMod.loadEarlierMsgs : null,
       pagerMod: pagerMod || null,
+      Cmd: cmdMod ? cmdMod.Cmd : null,
       req: PAGE.require,
     };
   }
@@ -585,6 +646,153 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Native export mode — automate WhatsApp's own per-chat "Export chat" button.
+  //
+  // Each chat is opened programmatically via Cmd.openChatBottom (so we sidestep
+  // the virtualized chat list entirely), then the native Export UI is driven by
+  // synthetic clicks. WhatsApp names the resulting ZIP(s) and drops them in the
+  // browser's download folder; the page cannot observe download completion, so
+  // we pace with a fixed settle delay (the existing rate slider). This sends
+  // read receipts for every chat it opens — unavoidable, documented.
+  // ---------------------------------------------------------------------------
+
+  // Programmatically open a chat model at the bottom (most-recent) and wait
+  // until it is the active chat. Signature drifts between builds, so try both.
+  async function openChatModel(store, chat) {
+    if (!store.Cmd || typeof store.Cmd.openChatBottom !== 'function') {
+      throw new Error('Cmd.openChatBottom unavailable');
+    }
+    try { await store.Cmd.openChatBottom(chat); }
+    catch { await store.Cmd.openChatBottom({ chat }); }
+    const want = widStr(chat.id);
+    await waitFor(() => {
+      const a = activeChat(store);
+      return a && widStr(a.id) === want ? a : null;
+    }, 8000, 200);
+  }
+
+  function closeAnyMenu(store) {
+    dispatchKey('Escape');
+    try { if (store.Cmd && typeof store.Cmd.closeChat === 'function') store.Cmd.closeChat(); } catch {}
+  }
+
+  // Locate (opening the drawer/menu if needed) the "Export chat" action for the
+  // currently-open chat. Cascade: contact-info drawer (where it lives on current
+  // builds) → header overflow menu (fallback for other builds).
+  async function findExportEntry() {
+    const inDrawer = () => {
+      const drawer = document.querySelector('[data-testid="chat-info-drawer"],[data-testid="drawer-right"]');
+      return (drawer && (drawer.querySelector('[data-testid="li-export-chat"]') || findByText('export chat', [drawer]))) || null;
+    };
+    // Already visible?
+    let hit = document.querySelector('[data-testid="li-export-chat"]') || inDrawer();
+    if (hit) return hit;
+
+    // (1) Open the contact-info / profile drawer.
+    const header = document.querySelector('header[data-testid="conversation-header"]') || document.querySelector('header');
+    const infoOpener =
+      (header && (header.querySelector('[data-testid="conversation-info-header"]') ||
+                  header.querySelector('[aria-label="Profile details"]'))) || null;
+    if (infoOpener) {
+      clickReal(infoOpener);
+      try {
+        return await waitFor(() => document.querySelector('[data-testid="li-export-chat"]') || inDrawer(), 4000);
+      } catch {}
+    }
+
+    // (2) Fallback: header overflow "⋮" menu.
+    const menuOpener = header && (
+      header.querySelector('[data-testid="menu"]') ||
+      header.querySelector('[aria-label="Menu"]') ||
+      header.querySelector('[aria-label="More options"]'));
+    if (menuOpener) {
+      clickReal(menuOpener);
+      return await waitFor(() => findByText('export chat'), 4000);
+    }
+    throw new Error('no export entry (drawer/menu opener not found)');
+  }
+
+  // Drive the native export for the chat that is already open on screen.
+  async function nativeExportOpenChat() {
+    const entry = await findExportEntry();
+    clickReal(entry);
+    // WhatsApp asks "Include media?" — choose "Without media" (lighter, faster).
+    const dialogs = () => {
+      const d = Array.from(document.querySelectorAll('[role="dialog"],[data-animate-modal-popup]')).filter(isVisible);
+      return d.length ? d : [document];
+    };
+    const choice = await waitFor(() => findByText('without media', dialogs()), 6000);
+    clickReal(choice);
+    // The download is not observable from the page — settle, then move on.
+    await sleep(CONFIG.pageSleepMs);
+  }
+
+  async function exportChatsNative(store, chats, ui) {
+    Log.warn('Native export opens each chat and SENDS READ RECEIPTS; WhatsApp names the ZIPs in your downloads folder.');
+    ui.setTotal(chats.length);
+    const t0 = Date.now();
+    const index = {
+      exporter: 'WhatsApp Web JSON Exporter',
+      version: VERSION,
+      mode: 'native',
+      exportedAt: nowIso(),
+      note: 'WhatsApp names the actual ZIP files in your browser download folder; this index only records which chats were triggered.',
+      account: meFromStore(store),
+      chats: [],
+    };
+
+    for (let i = 0; i < chats.length && !ui.cancelled; i++) {
+      const chat = chats[i];
+      let name;
+      try { name = chatToMeta(chat, store).name; } catch { name = widStr(chat.id) || `chat-${i}`; }
+      ui.setChat(i + 1, name);
+      const rec = { id: widStr(chat.id), name, isGroup: !!chat.isGroup, status: 'triggered', ts: nowIso() };
+
+      try {
+        await openChatModel(store, chat);
+        await nativeExportOpenChat();
+        Log.info(`✓ ${name} → native export triggered`);
+      } catch (e) {
+        rec.status = `skipped:${e.message}`;
+        Log.warn(`native export skipped: ${name}`, e.message);
+      } finally {
+        index.chats.push(rec);
+        closeAnyMenu(store);
+        await sleep(CONFIG.chatSleepMs);
+      }
+    }
+
+    index.cancelled = ui.cancelled;
+    index.triggeredCount = index.chats.filter((c) => c.status === 'triggered').length;
+    const secs = Math.round((Date.now() - t0) / 1000);
+    Log.info(`Native export complete: ${index.triggeredCount}/${chats.length} triggered, ${secs}s`);
+
+    const stamp = nowIso().replace(/[:.]/g, '-');
+    download(new Blob([JSON.stringify(index, null, 2)], { type: 'application/json' }),
+      `whatsapp-native-export-index${ui.cancelled ? '_partial' : ''}_${stamp}.json`);
+    ui.setStatus(`Native export: ${index.triggeredCount}/${chats.length} chats in ${secs}s. Check your downloads folder.`);
+    if (!ui.cancelled) Log.clearPersisted();
+  }
+
+  async function exportAllNative(store, ui) {
+    if (!store.Cmd || typeof store.Cmd.openChatBottom !== 'function') {
+      ui.setStatus('Native "all" needs WhatsApp\'s Cmd module (not found). Open a chat and use "Export current" instead.');
+      Log.warn('Cmd module unavailable — cannot iterate all chats for native export.');
+      return;
+    }
+    const chats = store.Chat.getModelsArray().slice();
+    Log.info(`Native-exporting all ${chats.length} chats…`);
+    await exportChatsNative(store, chats, ui);
+  }
+
+  async function exportCurrentNative(store, ui) {
+    const chat = activeChat(store);
+    if (!chat) { ui.setStatus('No chat is open — click a conversation first.'); return; }
+    Log.info('Native-exporting current chat…');
+    await exportChatsNative(store, [chat], ui);
+  }
+
+  // ---------------------------------------------------------------------------
   // UI panel (shadow DOM)
   // ---------------------------------------------------------------------------
   function Panel() {
@@ -640,6 +848,9 @@
           <label class="dbg" title="Auto-download the run log whenever a run finishes, is cancelled, or crashes.">
             <input type="checkbox" id="debug"> Debug: auto-save log on every run
           </label>
+          <label class="dbg" title="Instead of building JSON, automate WhatsApp's own per-chat Export (downloads native ZIPs). Sends read receipts.">
+            <input type="checkbox" id="native"> Use WhatsApp native export (ZIPs)
+          </label>
           <label class="rate">Rate limit between pages: <span id="rateval">250</span> ms
             <input type="range" id="rate" min="0" max="1500" step="50" value="250">
           </label>
@@ -653,7 +864,7 @@
     const el = {
       badge: $('badge'), body: $('body'), collapse: $('collapse'),
       all: $('all'), current: $('current'), cancel: $('cancel'), savelog: $('savelog'),
-      rate: $('rate'), rateval: $('rateval'), debug: $('debug'),
+      rate: $('rate'), rateval: $('rateval'), debug: $('debug'), native: $('native'),
       prog: $('prog'), status: $('status'), log: $('log'),
     };
 
@@ -698,6 +909,11 @@
       state.debug = el.debug.checked;
       gmSet('debug', state.debug);
     });
+
+    // Native-export mode: re-targets the two export buttons to drive WhatsApp's
+    // own per-chat Export instead of building JSON. Persisted.
+    el.native.checked = Boolean(gmGet('native', false));
+    el.native.addEventListener('change', () => gmSet('native', el.native.checked));
 
     // Download the run log, merging any crash-safe persisted tail from a prior
     // run that isn't already in this session's live buffer. Shared by the
@@ -882,10 +1098,10 @@
         Log.info(`Store ready via "${store.source}".`);
         panel.setBadge(store.source);
         panel.ui.setStatus('Ready. Open a chat for "current", or export all.');
-        if (DEV) PAGE.__waExport = { store, exportAll, exportCurrent, resolveStore };
+        if (DEV) PAGE.__waExport = { store, exportAll, exportCurrent, exportAllNative, exportCurrentNative, resolveStore };
         panel.bind({
-          onAll: () => exportAll(store, panel.ui),
-          onCurrent: () => exportCurrent(store, panel.ui),
+          onAll: () => (panel.el.native.checked ? exportAllNative(store, panel.ui) : exportAll(store, panel.ui)),
+          onCurrent: () => (panel.el.native.checked ? exportCurrentNative(store, panel.ui) : exportCurrent(store, panel.ui)),
         });
       })
       .catch((e) => {

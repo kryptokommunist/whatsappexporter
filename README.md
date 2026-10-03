@@ -1,8 +1,9 @@
 # WhatsApp Web JSON Exporter
 
-A single [Tampermonkey](https://www.tampermonkey.net/) / Violentmonkey **userscript** that exports **all your WhatsApp Web chats** — with full message history — as a **ZIP of per-chat JSON files**, straight from `web.whatsapp.com` in Chrome.
+A single [Tampermonkey](https://www.tampermonkey.net/) / Violentmonkey **userscript** that exports your WhatsApp Web chats, straight from `web.whatsapp.com` in Chrome. It offers two modes:
 
-It reads WhatsApp Web's own in-page data models (not the rendered DOM), so the JSON is clean and complete: real message IDs, timestamps, types, authors, and media metadata.
+- **JSON mode** (default) — exports **all chats** as a **ZIP of per-chat JSON files**, read from WhatsApp Web's own in-page data models (not the rendered DOM), so the JSON is clean: real message IDs, timestamps, types, authors, and media metadata.
+- **Native mode** — automates WhatsApp's own per-chat **"Export chat"** button for a more complete, phone-sourced archive (see [Native export](#native-export-whatsapp-zips) below).
 
 > ⚠️ **It only exports *your own* data from *your own* logged-in session.** It never sends messages, never uploads anything, and does not download media file bytes (only media metadata). Use at your own risk — see the disclaimer below.
 
@@ -23,6 +24,24 @@ It reads WhatsApp Web's own in-page data models (not the rendered DOM), so the J
 4. **Cancel** stops the run and still downloads a `_partial` ZIP of whatever finished.
 5. **Save log** downloads the full run log (`wa-export-log_<timestamp>.txt`) at any time — mid-run, after it finishes, or after a crash. The same log is also bundled as `_log.txt` inside every export ZIP, so a completed run is self-documenting.
 6. **Debug: auto-save log on every run** — tick this and the log is downloaded automatically whenever a run **finishes**, is **cancelled**, or **crashes** (filenames tagged `_done` / `_cancelled` / `_crash`). The setting is remembered, and the `#waexport=dev` URL flag forces it on.
+
+## Native export (WhatsApp ZIPs)
+
+The JSON mode above is limited by what WhatsApp Web keeps in memory — deep history often lives only on your phone, so some chats export with very few messages. For a **complete** archive, tick **Use WhatsApp native export (ZIPs)** and the two export buttons instead automate WhatsApp's own per-chat **"Export chat"** feature:
+
+- **Export current chat** triggers the native export for the open conversation.
+- **Export all chats** opens every chat in turn (programmatically, via WhatsApp's own chat-open command — no scrolling the list) and triggers the native export for each.
+
+What you get and the trade-offs:
+
+- **Output is N separate ZIPs, named by WhatsApp**, dropped straight into your browser's **download folder**. The script cannot rename them or bundle them into one archive. It does download a small `whatsapp-native-export-index_<timestamp>.json` recording which chats it triggered (and any it skipped).
+- The native ZIPs are **media-inclusive but not clean JSON** — they're WhatsApp's own `.txt` + attachments format. (The script chooses **"Without media"** to keep them light; this is text-only.)
+- **It sends read receipts.** Opening each chat marks it read — unavoidable in this mode, unlike the read-only JSON mode. A warning is logged at the start of every native run.
+- **English UI only.** It matches the buttons by visible text ("Export chat", "Without media"), so a non-English WhatsApp locale will cause chats to be skipped. Switch WhatsApp Web to English first.
+- Chrome shows a **one-time "Allow multiple downloads"** prompt on the first ZIP of an "all" run — click Allow.
+- The page can't tell when a native download finishes, so pacing is a fixed settle delay — it **reuses the Rate limit slider**. On a slow disk or for very large chats, raise the slider if downloads get dropped.
+
+Per-chat failures are isolated: if a chat's export UI can't be found within a few seconds, it's logged, marked skipped, and the run continues. **Cancel** stops after the current chat and still downloads the partial index.
 
 ### Crash-safe logging
 
