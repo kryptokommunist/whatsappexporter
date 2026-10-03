@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WhatsApp Web JSON Exporter
 // @namespace    https://github.tools.sap/I771869/whatsappexporter
-// @version      0.2.0
+// @version      0.2.1
 // @description  Export all WhatsApp Web chats as JSON (ZIP) or by automating WhatsApp's native per-chat export.
 // @author       I771869
 // @match        https://web.whatsapp.com/*
@@ -45,7 +45,7 @@
     cmd: 'WAWebCmd',
   };
 
-  const VERSION = '0.2.0';
+  const VERSION = '0.2.1';
   const DEV = /[?#&]waexport=dev/.test(location.href);
   const FORCE = (location.href.match(/[?#&]waexport=(raid|dom)/) || [])[1] || null;
 
@@ -96,9 +96,10 @@
   // First visible actionable element whose text contains `text` (ci).
   const findByText = (text, roots = [document]) => {
     const needle = String(text).toLowerCase();
+    const sel = '[role="button"],[role="menuitem"],button,li,[data-testid]';
     for (const root of roots) {
       if (!root || typeof root.querySelectorAll !== 'function') continue;
-      const nodes = root.querySelectorAll('[role="button"],button,[data-testid]');
+      const nodes = root.querySelectorAll(sel);
       for (const n of nodes) {
         if (!isVisible(n)) continue;
         if ((n.textContent || '').trim().toLowerCase().includes(needle)) return n;
@@ -681,49 +682,84 @@
   // Locate (opening the drawer/menu if needed) the "Export chat" action for the
   // currently-open chat. Cascade: contact-info drawer (where it lives on current
   // builds) → header overflow menu (fallback for other builds).
+  // One-shot diagnostic: dump what the automation can actually see, so a failed
+  // run tells us the real selectors instead of us guessing. Logged once.
+  let domProbed = false;
+  function probeExportDom(where) {
+    if (domProbed) return;
+    domProbed = true;
+    try {
+      const header = document.querySelector('header[data-testid="conversation-header"]') || document.querySelector('header');
+      const btns = Array.from(document.querySelectorAll('[role="button"],button,[data-testid],[aria-label]'))
+        .filter(isVisible)
+        .map((n) => ({
+          tag: n.tagName.toLowerCase(),
+          testid: n.getAttribute('data-testid') || '',
+          aria: n.getAttribute('aria-label') || '',
+          text: (n.textContent || '').trim().slice(0, 24),
+        }))
+        .filter((o) => /export|menu|more|profile|info|details|without|media/i.test(o.testid + o.aria + o.text));
+      Log.info(`[probe:${where}] header present: ${!!header}; candidate controls:`, safeJson(btns.slice(0, 25)));
+    } catch (e) { Log.warn('[probe] dom dump failed', e); }
+  }
+
   async function findExportEntry() {
-    const inDrawer = () => {
-      const drawer = document.querySelector('[data-testid="chat-info-drawer"],[data-testid="drawer-right"]');
-      return (drawer && (drawer.querySelector('[data-testid="li-export-chat"]') || findByText('export chat', [drawer]))) || null;
-    };
-    // Already visible?
-    let hit = document.querySelector('[data-testid="li-export-chat"]') || inDrawer();
+    // Export item: stable test-id, else any visible control whose text is "Export chat".
+    const findItem = () =>
+      document.querySelector('[data-testid="li-export-chat"]') ||
+      findByText('export chat') ||
+      null;
+
+    // Already visible (drawer/menu open)?
+    let hit = findItem();
     if (hit) return hit;
 
-    // (1) Open the contact-info / profile drawer.
+    // (1) Open the contact-info / profile drawer. Try test-id, aria-label, then
+    // any visible control that reads "Profile details"/"Contact info" anywhere.
     const header = document.querySelector('header[data-testid="conversation-header"]') || document.querySelector('header');
     const infoOpener =
       (header && (header.querySelector('[data-testid="conversation-info-header"]') ||
-                  header.querySelector('[aria-label="Profile details"]'))) || null;
+                  header.querySelector('[aria-label="Profile details"]') ||
+                  header.querySelector('[aria-label*="info" i]') ||
+                  header.querySelector('[aria-label*="profile" i]'))) ||
+      findByText('contact info') || null;
     if (infoOpener) {
       clickReal(infoOpener);
-      try {
-        return await waitFor(() => document.querySelector('[data-testid="li-export-chat"]') || inDrawer(), 4000);
-      } catch {}
+      try { return await waitFor(findItem, 5000); } catch {}
     }
 
-    // (2) Fallback: header overflow "⋮" menu.
+    // (2) Fallback: header overflow "⋮" menu, then "Export chat" in the popup.
     const menuOpener = header && (
       header.querySelector('[data-testid="menu"]') ||
       header.querySelector('[aria-label="Menu"]') ||
-      header.querySelector('[aria-label="More options"]'));
+      header.querySelector('[aria-label="More options"]') ||
+      header.querySelector('[aria-label*="menu" i]') ||
+      header.querySelector('[data-icon="menu"],[data-icon="more-refreshed"]'));
     if (menuOpener) {
-      clickReal(menuOpener);
-      return await waitFor(() => findByText('export chat'), 4000);
+      clickReal(menuOpener.closest('[role="button"],button') || menuOpener);
+      try { return await waitFor(findItem, 5000); } catch {}
     }
-    throw new Error('no export entry (drawer/menu opener not found)');
+
+    probeExportDom('entry');
+    throw new Error('export entry not found (opened drawer/menu but no "Export chat")');
   }
 
   // Drive the native export for the chat that is already open on screen.
   async function nativeExportOpenChat() {
     const entry = await findExportEntry();
     clickReal(entry);
-    // WhatsApp asks "Include media?" — choose "Without media" (lighter, faster).
+    // WhatsApp asks "Include media?" — choose "Without media" (text-only, lighter).
     const dialogs = () => {
       const d = Array.from(document.querySelectorAll('[role="dialog"],[data-animate-modal-popup]')).filter(isVisible);
       return d.length ? d : [document];
     };
-    const choice = await waitFor(() => findByText('without media', dialogs()), 6000);
+    let choice;
+    try {
+      choice = await waitFor(() => findByText('without media', dialogs()), 6000);
+    } catch (e) {
+      probeExportDom('media-dialog');
+      throw new Error('"Without media" button not found after clicking Export chat');
+    }
     clickReal(choice);
     // The download is not observable from the page — settle, then move on.
     await sleep(CONFIG.pageSleepMs);
