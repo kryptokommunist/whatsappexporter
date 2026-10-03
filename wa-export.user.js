@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WhatsApp Web JSON Exporter
-// @namespace    https://github.tools.sap/I771869/whatsappexporter
-// @version      0.2.6
+// @namespace    https://github.com/kryptokommunist/whatsappexporter
+// @version      0.2.7
 // @description  Export all WhatsApp Web chats as JSON (ZIP) or by automating WhatsApp's native per-chat export.
 // @author       I771869
 // @match        https://web.whatsapp.com/*
@@ -45,7 +45,7 @@
     cmd: 'WAWebCmd',
   };
 
-  const VERSION = '0.2.6';
+  const VERSION = '0.2.7';
   const DEV = /[?#&]waexport=dev/.test(location.href);
   const FORCE = (location.href.match(/[?#&]waexport=(raid|dom)/) || [])[1] || null;
 
@@ -757,12 +757,31 @@
       findByText('contact info') || null;
     if (infoOpener) {
       clickReal(infoOpener);
-      try { return await waitFor(findItem, 5000); } catch {}
-      // Drawer opened but no "Export chat" row — this chat offers no native
-      // export (e.g. WhatsApp's own system/notifications chat). Don't waste a
-      // second 5s timeout on the overflow menu; mark it clearly and bail.
-      const drawer = document.querySelector('[data-testid="chat-info-drawer"],[data-testid="drawer-right"]');
+      // Wait for the drawer to appear, then look for the export row.
+      try { return await waitFor(findItem, 3000); } catch {}
+      // The "Export chat" row lives near the BOTTOM of the (contact / group /
+      // community) info drawer, which WhatsApp lazy-renders — it isn't in the
+      // DOM until scrolled into view. Scroll the drawer body down in steps and
+      // re-check after each step before concluding there's no export option.
+      const drawer = document.querySelector('[data-testid="chat-info-drawer"],[data-testid="drawer-right"],[data-testid="community-tabbed-info-drawer"]');
       if (drawer && isVisible(drawer)) {
+        const scroller =
+          drawer.querySelector('[data-testid="contact-info-drawer-body"],[data-testid="group-info-drawer-body"],[data-testid="community-tabbed-info-drawer-body"]') ||
+          // else the deepest scrollable element inside the drawer
+          Array.from(drawer.querySelectorAll('*')).find((n) => n.scrollHeight > n.clientHeight + 20) ||
+          drawer;
+        for (let step = 0; step < 12; step++) {
+          hit = findItem();
+          if (hit) return hit;
+          const before = scroller.scrollTop;
+          scroller.scrollTop = Math.min(scroller.scrollTop + scroller.clientHeight * 0.9 + 400, scroller.scrollHeight);
+          scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+          await sleep(180);
+          // Reached the bottom and nothing new rendered — stop scrolling.
+          if (scroller.scrollTop === before && step > 0) break;
+        }
+        hit = findItem();
+        if (hit) return hit;
         probeExportDom('no-export-in-drawer');
         throw new Error('no "Export chat" option for this chat (likely a system/business chat)');
       }
