@@ -667,10 +667,19 @@
     }
     const src = GM_getResourceText('JSZIP');
     if (!src) throw new Error('JSZip resource empty — reinstall the script to refetch it.');
-    // Evaluate in a scope that captures the UMD global without touching the page CSP.
-    const factory = new Function(src + '\n;return (typeof JSZip!=="undefined")?JSZip:(this.JSZip||null);');
-    const Z = factory.call({});
-    if (!Z) throw new Error('JSZip failed to initialize from resource.');
+    // Run the UMD bundle against a captured fake scope. The wrapper may assign to
+    // module.exports, to `this`, or to a global (self/window/globalThis) depending
+    // on which branch it detects — so give it a sandbox object as all of those and
+    // read JSZip back from whichever one it used.
+    const sandbox = {};
+    const mod = { exports: {} };
+    const factory = new Function(
+      'module', 'exports', 'self', 'window', 'globalThis',
+      src + '\n;return module.exports && (module.exports.loadAsync || module.exports.prototype) ? module.exports : (this.JSZip || self.JSZip || window.JSZip || globalThis.JSZip || null);'
+    );
+    const Z = factory.call(sandbox, mod, mod.exports, sandbox, sandbox, sandbox)
+      || sandbox.JSZip || mod.exports.JSZip || null;
+    if (!Z || typeof Z !== 'function') throw new Error('JSZip failed to initialize from resource.');
     return Z;
   }
   let JSZipLib = null;
