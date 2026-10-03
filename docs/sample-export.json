@@ -1,0 +1,73 @@
+{
+  "id": "10000000000@c.us",
+  "name": "Example Contact",
+  "isGroup": false,
+  "archived": false,
+  "pinned": false,
+  "unreadCount": 0,
+  "participants": [],
+  "lastMessageTimestamp": 1727900400,
+  "messageCount": 3,
+  "messages": [
+    {
+      "id": "false_10000000000@c.us_AAAAAAAAAA",
+      "timestamp": 1727900000,
+      "isoTime": "2024-10-02T22:00:00.000Z",
+      "from": "10000000000@c.us",
+      "to": "20000000000@c.us",
+      "author": null,
+      "fromMe": false,
+      "type": "chat",
+      "subtype": null,
+      "body": "Hey, are we still on for tomorrow?",
+      "caption": null,
+      "quotedMsgId": null,
+      "mentionedIds": [],
+      "ack": 3,
+      "star": false
+    },
+    {
+      "id": "true_10000000000@c.us_BBBBBBBBBB",
+      "timestamp": 1727900200,
+      "isoTime": "2024-10-02T22:03:20.000Z",
+      "from": "20000000000@c.us",
+      "to": "10000000000@c.us",
+      "author": null,
+      "fromMe": true,
+      "type": "chat",
+      "subtype": null,
+      "body": "Yep! 10am works.",
+      "caption": null,
+      "quotedMsgId": "false_10000000000@c.us_AAAAAAAAAA",
+      "mentionedIds": [],
+      "ack": 3,
+      "star": false
+    },
+    {
+      "id": "false_10000000000@c.us_CCCCCCCCCC",
+      "timestamp": 1727900400,
+      "isoTime": "2024-10-02T22:06:40.000Z",
+      "from": "10000000000@c.us",
+      "to": "20000000000@c.us",
+      "author": null,
+      "fromMe": false,
+      "type": "image",
+      "subtype": null,
+      "body": null,
+      "caption": "Here's the map",
+      "quotedMsgId": null,
+      "mentionedIds": [],
+      "ack": 2,
+      "star": false,
+      "media": {
+        "mimetype": "image/jpeg",
+        "filename": "IMG-20241002-WA0001.jpg",
+        "size": 183221,
+        "mediaKeyPresent": true,
+        "isViewOnce": false,
+        "duration": null,
+        "location": null
+      }
+    }
+  ]
+}

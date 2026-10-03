@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Exported WhatsApp data — NEVER commit (contains private conversations)
+*.zip
+*.ndjson
+whatsapp-export*
+# JSON exports anywhere except the redacted sample and docs
+/*.json
+data/
+output/
+
+# OS / editor
+.DS_Store
+*.swp
+.vscode/
+.idea/
