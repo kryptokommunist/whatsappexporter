@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WhatsApp Web JSON Exporter
 // @namespace    https://github.tools.sap/I771869/whatsappexporter
-// @version      0.1.0
+// @version      0.1.1
 // @description  Export all WhatsApp Web chats + full history as a ZIP of per-chat JSON files.
 // @author       I771869
 // @match        https://web.whatsapp.com/*
@@ -10,6 +10,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_getResourceText
+// @grant        unsafeWindow
 // @resource     JSZIP https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js
 // @noframes
 // ==/UserScript==
@@ -17,6 +18,15 @@
 /* eslint-disable no-empty */
 (() => {
   'use strict';
+
+  // ---------------------------------------------------------------------------
+  // Page scope. With @grant set, the userscript runs in an isolated sandbox
+  // whose `window` is a wrapper — WhatsApp's `require`, webpack chunk, and
+  // __debug live on the REAL page window, exposed as `unsafeWindow`. Reach the
+  // page through PAGE; fall back to window if unsafeWindow is unavailable
+  // (e.g. @grant none sandbox, where window already IS the page).
+  // ---------------------------------------------------------------------------
+  const PAGE = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
 
   // ---------------------------------------------------------------------------
   // Config & known module names (patch here if WhatsApp renames internals)
@@ -34,7 +44,7 @@
     loadMessages: 'WAWebChatLoadMessages',
   };
 
-  const VERSION = '0.1.0';
+  const VERSION = '0.1.1';
   const DEV = /[?#&]waexport=dev/.test(location.href);
   const FORCE = (location.href.match(/[?#&]waexport=(raid|dom)/) || [])[1] || null;
 
@@ -70,7 +80,7 @@
   }
 
   function tryNamedModules() {
-    const req = window.require;
+    const req = PAGE.require;
     if (typeof req !== 'function') return null;
     const col = safeRequire(req, KNOWN_NAMES.collections);
     if (!col || !col.Chat || typeof col.Chat.getModelsArray !== 'function') return null;
@@ -98,10 +108,10 @@
     const modules = {};
     const chunkName = 'webpackChunkwhatsapp_web_client';
 
-    if (Array.isArray(window[chunkName])) {
+    if (Array.isArray(PAGE[chunkName])) {
       const id = 'waExporter_' + Date.now();
       try {
-        window[chunkName].push([[id], {}, (req) => {
+        PAGE[chunkName].push([[id], {}, (req) => {
           for (const k in req.m) {
             try { modules[k] = req(k); } catch {}
           }
@@ -110,10 +120,10 @@
     }
 
     // Older builds expose a debug module map.
-    if (!Object.keys(modules).length && window.__debug && window.__debug.modulesMap) {
-      for (const k in window.__debug.modulesMap) {
+    if (!Object.keys(modules).length && PAGE.__debug && PAGE.__debug.modulesMap) {
+      for (const k in PAGE.__debug.modulesMap) {
         try {
-          const m = window.__debug.modulesMap[k];
+          const m = PAGE.__debug.modulesMap[k];
           modules[k] = (m && m.defaultExport) ? m.defaultExport : m;
         } catch {}
       }
@@ -151,7 +161,7 @@
       Contact: contactCol || null,
       GroupMetadata: groupCol || null,
       loadEarlierMsgs: pagerMod ? pagerMod.loadEarlierMsgs : null,
-      req: window.require,
+      req: PAGE.require,
     };
   }
 
@@ -661,7 +671,7 @@
   // ---------------------------------------------------------------------------
   function loadJSZip() {
     if (typeof JSZip !== 'undefined') return JSZip;
-    if (typeof window !== 'undefined' && window.JSZip) return window.JSZip;
+    if (typeof PAGE !== 'undefined' && PAGE.JSZip) return PAGE.JSZip;
     if (typeof GM_getResourceText !== 'function') {
       throw new Error('JSZip unavailable: grant GM_getResourceText and reinstall the script.');
     }
@@ -721,7 +731,7 @@
         Log.info(`Store ready via "${store.source}".`);
         panel.setBadge(store.source);
         panel.ui.setStatus('Ready. Open a chat for "current", or export all.');
-        if (DEV) window.__waExport = { store, exportAll, exportCurrent, resolveStore };
+        if (DEV) PAGE.__waExport = { store, exportAll, exportCurrent, resolveStore };
         panel.bind({
           onAll: () => exportAll(store, panel.ui),
           onCurrent: () => exportCurrent(store, panel.ui),
