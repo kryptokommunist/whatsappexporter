@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WhatsApp Web JSON Exporter
 // @namespace    https://github.tools.sap/I771869/whatsappexporter
-// @version      0.2.2
+// @version      0.2.3
 // @description  Export all WhatsApp Web chats as JSON (ZIP) or by automating WhatsApp's native per-chat export.
 // @author       I771869
 // @match        https://web.whatsapp.com/*
@@ -45,7 +45,7 @@
     cmd: 'WAWebCmd',
   };
 
-  const VERSION = '0.2.2';
+  const VERSION = '0.2.3';
   const DEV = /[?#&]waexport=dev/.test(location.href);
   const FORCE = (location.href.match(/[?#&]waexport=(raid|dom)/) || [])[1] || null;
 
@@ -706,7 +706,7 @@
           aria: n.getAttribute('aria-label') || '',
           text: (n.textContent || '').trim().slice(0, 24),
         }))
-        .filter((o) => /export|menu|more|profile|info|details|without|media/i.test(o.testid + o.aria + o.text));
+        .filter((o) => /export|menu|more|profile|info|details|without|with media|media|continue|cancel|modal/i.test(o.testid + o.aria + o.text));
       Log.info(`[probe:${where}] header present: ${!!header}; candidate controls:`, safeJson(btns.slice(0, 25)));
     } catch (e) { Log.warn('[probe] dom dump failed', e); }
   }
@@ -752,30 +752,64 @@
     throw new Error('export entry not found (opened drawer/menu but no "Export chat")');
   }
 
+  // The visible confirmation modal(s). Current builds use
+  // [data-testid="export-chat-modal"] inside a [role="dialog"]; we prefer that,
+  // then fall back to any visible dialog/popup, then the whole document.
+  function exportDialogRoots() {
+    const modal = Array.from(document.querySelectorAll('[data-testid="export-chat-modal"]')).filter(isVisible);
+    if (modal.length) return modal;
+    const d = Array.from(document.querySelectorAll('[role="dialog"],[data-animate-modal-popup]')).filter(isVisible);
+    return d.length ? d : [document];
+  }
+
+  // Find the confirm/proceed control inside a dialog. The date-range modal's
+  // footer has two <button>s — "Cancel" and "Export" (label nested in <span>s);
+  // a later media prompt may offer "Without media"/"With media"/"Continue".
+  // Prefer a media choice when present, else the exact "Export" button, never
+  // "Cancel", and never the "Export chat" row (that's the opener, not a dialog).
+  function findConfirmButton(roots) {
+    return (
+      findByText('without media', roots) ||
+      findByText('with media', roots) ||
+      findByText('continue', roots, { exact: true }) ||
+      findByText('export', roots, { exact: true }) ||
+      null
+    );
+  }
+
   // Drive the native export for the chat that is already open on screen.
   async function nativeExportOpenChat() {
     const entry = await findExportEntry();
     clickReal(entry);
-    // A confirmation dialog opens. Depending on the build it's either a
-    // "Without media" / "With media" pair, or a single "Export" button
-    // (sometimes with a media toggle). Click the first of these that appears,
-    // scoped to the visible dialog so we don't re-hit the "Export chat" row.
-    const dialogs = () => {
-      const d = Array.from(document.querySelectorAll('[role="dialog"],[data-animate-modal-popup]')).filter(isVisible);
-      return d.length ? d : [document];
-    };
-    const findConfirm = () =>
-      findByText('without media', dialogs()) ||
-      findByText('export', dialogs(), { exact: true }) ||
-      null;
+
+    // Step 1: the primary confirmation modal (date-range → "Export", or a
+    // direct media choice depending on the build).
     let choice;
     try {
-      choice = await waitFor(findConfirm, 6000);
+      choice = await waitFor(() => findConfirmButton(exportDialogRoots()), 8000);
     } catch (e) {
-      probeExportDom('media-dialog');
-      throw new Error('export confirm button ("Without media"/"Export") not found');
+      probeExportDom('export-dialog');
+      throw new Error('export confirm button ("Export"/"Without media") not found');
     }
+    const firstLabel = (choice.textContent || '').trim().toLowerCase();
     clickReal(choice);
+
+    // Step 2 (optional): if the first click was a plain "Export"/"Continue",
+    // some builds then show a media-choice dialog. Wait briefly for it; if it
+    // appears, click a media option. If nothing new appears, the download has
+    // already started (single-step build) — that's fine, not an error.
+    if (!/media/.test(firstLabel)) {
+      try {
+        const media = await waitFor(() => {
+          const b = findByText('without media', exportDialogRoots()) ||
+                    findByText('with media', exportDialogRoots());
+          // Only treat as a real second step if it's a different control.
+          return b && b !== choice ? b : null;
+        }, 2500);
+        clickReal(media);
+      } catch { /* no second dialog — single-step build, download already started */ }
+    }
+
     // The download is not observable from the page — settle, then move on.
     await sleep(CONFIG.pageSleepMs);
   }

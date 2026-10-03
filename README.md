@@ -35,7 +35,7 @@ The JSON mode above is limited by what WhatsApp Web keeps in memory — deep his
 What you get and the trade-offs:
 
 - **Output is N separate ZIPs, named by WhatsApp**, dropped straight into your browser's **download folder**. The script cannot rename them or bundle them into one archive. It does download a small `whatsapp-native-export-index_<timestamp>.json` recording which chats it triggered (and any it skipped).
-- The native ZIPs are WhatsApp's own `.txt` + attachments format, **not clean JSON**. On the confirmation dialog the script clicks **"Without media"** when that option is offered, otherwise the single **"Export"** button (whose output may include media, depending on your WhatsApp build).
+- The native ZIPs are WhatsApp's own `.txt` + attachments format, **not clean JSON**. On the confirmation modal the script clicks **"Export"** (choosing WhatsApp's default date range), then, if your build shows a second media prompt, picks **"Without media"**. Depending on your WhatsApp build the output may or may not include media.
 - **It sends read receipts.** Opening each chat marks it read — unavoidable in this mode, unlike the read-only JSON mode. A warning is logged at the start of every native run.
 - **English UI only.** It matches the buttons by visible text ("Export chat", "Without media"/"Export"), so a non-English WhatsApp locale will cause chats to be skipped. Switch WhatsApp Web to English first.
 - Chrome shows a **one-time "Allow multiple downloads"** prompt on the first ZIP of an "all" run — click Allow.
