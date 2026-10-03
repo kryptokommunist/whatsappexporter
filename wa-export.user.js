@@ -9,7 +9,8 @@
 // @grant        GM_download
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @require      https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js
+// @grant        GM_getResourceText
+// @resource     JSZIP https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js
 // @noframes
 // ==/UserScript==
 
@@ -414,7 +415,8 @@
   }
 
   async function exportChats(store, chats, ui) {
-    const zip = new JSZip();
+    if (!JSZipLib) JSZipLib = loadJSZip();
+    const zip = new JSZipLib();
     const usedNames = new Set();
     const manifest = {
       exporter: 'WhatsApp Web JSON Exporter',
@@ -653,6 +655,25 @@
       },
     };
   }
+
+  // ---------------------------------------------------------------------------
+  // JSZip loader (CSP-proof: eval the bundled @resource, no network at runtime)
+  // ---------------------------------------------------------------------------
+  function loadJSZip() {
+    if (typeof JSZip !== 'undefined') return JSZip;
+    if (typeof window !== 'undefined' && window.JSZip) return window.JSZip;
+    if (typeof GM_getResourceText !== 'function') {
+      throw new Error('JSZip unavailable: grant GM_getResourceText and reinstall the script.');
+    }
+    const src = GM_getResourceText('JSZIP');
+    if (!src) throw new Error('JSZip resource empty — reinstall the script to refetch it.');
+    // Evaluate in a scope that captures the UMD global without touching the page CSP.
+    const factory = new Function(src + '\n;return (typeof JSZip!=="undefined")?JSZip:(this.JSZip||null);');
+    const Z = factory.call({});
+    if (!Z) throw new Error('JSZip failed to initialize from resource.');
+    return Z;
+  }
+  let JSZipLib = null;
 
   // ---------------------------------------------------------------------------
   // GM storage helpers (graceful if not granted)
