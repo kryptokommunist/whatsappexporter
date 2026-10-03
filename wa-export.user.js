@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WhatsApp Web JSON Exporter
 // @namespace    https://github.tools.sap/I771869/whatsappexporter
-// @version      0.1.2
+// @version      0.1.3
 // @description  Export all WhatsApp Web chats + full history as a ZIP of per-chat JSON files.
 // @author       I771869
 // @match        https://web.whatsapp.com/*
@@ -44,7 +44,7 @@
     loadMessages: 'WAWebChatLoadMessages',
   };
 
-  const VERSION = '0.1.2';
+  const VERSION = '0.1.3';
   const DEV = /[?#&]waexport=dev/.test(location.href);
   const FORCE = (location.href.match(/[?#&]waexport=(raid|dom)/) || [])[1] || null;
 
@@ -52,21 +52,43 @@
   const nowIso = () => new Date().toISOString();
 
   // ---------------------------------------------------------------------------
-  // Logger (mirrored into the UI mini-log + an in-memory buffer written to
-  // _log.txt in the export ZIP, so a finished run can be debugged after the fact)
+  // Logger. Keeps an in-memory ring buffer (→ _log.txt in the ZIP on a clean
+  // finish) AND periodically flushes its tail to GM storage, which survives a
+  // tab crash / reload. So even if a run dies mid-way, the last snapshot is
+  // recoverable: Save log reads the persisted tail and merges it in, and on
+  // startup an unfinished log is surfaced for download.
   // ---------------------------------------------------------------------------
+  const LOG_STORE_KEY = 'lastlog';
   const Log = (() => {
     let sink = null;
     const buffer = [];
-    const MAX_LINES = 50000; // ring buffer cap so a huge run can't OOM the tab
+    const MAX_LINES = 50000;      // ring buffer cap so a huge run can't OOM the tab
+    const PERSIST_TAIL = 5000;    // lines kept in crash-safe GM storage
+    const FLUSH_EVERY_MS = 4000;  // time-throttle for periodic flush
+    const FLUSH_EVERY_LINES = 100;// line-throttle: flush at least this often
+    let dirtySince = 0;
+    let lastFlush = 0;
+
+    const persist = (force) => {
+      if (!buffer.length) return;
+      const now = Date.now();
+      if (!force && dirtySince < FLUSH_EVERY_LINES && (now - lastFlush) < FLUSH_EVERY_MS) return;
+      lastFlush = now; dirtySince = 0;
+      const tail = buffer.slice(-PERSIST_TAIL).join('\n') + '\n';
+      try { if (typeof GM_setValue === 'function') GM_setValue('waexport_' + LOG_STORE_KEY, tail); } catch {}
+    };
+
     const emit = (level, args) => {
       const ts = new Date().toISOString();
       const text = args.map(stringify).join(' ');
       buffer.push(`${ts} [${level.toUpperCase()}] ${text}`);
       if (buffer.length > MAX_LINES) buffer.splice(0, buffer.length - MAX_LINES);
+      dirtySince++;
       const line = `[${new Date().toLocaleTimeString()}] ${text}`;
       if (sink) sink(level, line);
       if (DEV || level === 'error') console[level === 'warn' ? 'warn' : level === 'error' ? 'error' : 'log']('[wa-export]', ...args);
+      // Errors flush immediately — they're the thing you most want to survive a crash.
+      persist(level === 'error');
     };
     const stringify = (a) => (a instanceof Error ? (a.stack || a.message) : typeof a === 'object' ? safeJson(a) : String(a));
     return {
@@ -76,6 +98,15 @@
       error: (...a) => emit('error', a),
       getText: () => buffer.join('\n') + '\n',
       lineCount: () => buffer.length,
+      flush: () => persist(true),
+      // Pull the crash-safe tail persisted by a prior/current run.
+      getPersisted: () => {
+        try { if (typeof GM_getValue === 'function') return GM_getValue('waexport_' + LOG_STORE_KEY, '') || ''; } catch {}
+        return '';
+      },
+      clearPersisted: () => {
+        try { if (typeof GM_setValue === 'function') GM_setValue('waexport_' + LOG_STORE_KEY, ''); } catch {}
+      },
     };
   })();
 
@@ -496,6 +527,9 @@
     download(blob, zipName);
 
     ui.setStatus(`Done — ${manifest.exportedChatCount} chats in ${secs}s → ${zipName}`);
+    // The full log is now inside the ZIP; a clean finish has nothing left to
+    // recover, so drop the crash-safe tail to avoid a stale recovery prompt.
+    if (!ui.cancelled) Log.clearPersisted();
   }
 
   async function exportAll(store, ui) {
@@ -549,6 +583,8 @@
         .row button { flex:1; }
         .rate { font-size:11px; color:#8696a0; display:flex; flex-direction:column; gap:4px; }
         .rate input { width:100%; }
+        .dbg { font-size:11px; color:#8696a0; display:flex; align-items:center; gap:6px; cursor:pointer; }
+        .dbg input { margin:0; }
         .status { font-size:12px; color:#8696a0; min-height:16px; }
         .prog { font-size:12px; }
         .log { font-size:10px; font-family:ui-monospace,Menlo,monospace; background:#0b141a; border-radius:6px;
@@ -568,6 +604,9 @@
             <button class="act" id="cancel" disabled>Cancel</button>
             <button class="act" id="savelog" title="Download the run log so far (also bundled as _log.txt in each export)">Save log</button>
           </div>
+          <label class="dbg" title="Auto-download the run log whenever a run finishes, is cancelled, or crashes.">
+            <input type="checkbox" id="debug"> Debug: auto-save log on every run
+          </label>
           <label class="rate">Rate limit between pages: <span id="rateval">250</span> ms
             <input type="range" id="rate" min="0" max="1500" step="50" value="250">
           </label>
@@ -581,7 +620,7 @@
     const el = {
       badge: $('badge'), body: $('body'), collapse: $('collapse'),
       all: $('all'), current: $('current'), cancel: $('cancel'), savelog: $('savelog'),
-      rate: $('rate'), rateval: $('rateval'),
+      rate: $('rate'), rateval: $('rateval'), debug: $('debug'),
       prog: $('prog'), status: $('status'), log: $('log'),
     };
 
@@ -617,6 +656,31 @@
       el.rateval.textContent = el.rate.value;
       gmSet('rateMs', CONFIG.pageSleepMs);
     });
+
+    // Debug toggle: when on, the log is auto-downloaded at the end of every run
+    // (finish, cancel, or crash). Forced on by #waexport=dev. Persisted.
+    state.debug = DEV || Boolean(gmGet('debug', false));
+    el.debug.checked = state.debug;
+    el.debug.addEventListener('change', () => {
+      state.debug = el.debug.checked;
+      gmSet('debug', state.debug);
+    });
+
+    // Download the run log, merging any crash-safe persisted tail from a prior
+    // run that isn't already in this session's live buffer. Shared by the
+    // Save-log button and the Debug auto-save.
+    const saveLog = (tag) => {
+      const stamp = nowIso().replace(/[:.]/g, '-');
+      const live = Log.getText();
+      const persisted = Log.getPersisted();
+      let text = live;
+      if (persisted && !live.includes(persisted.trim().split('\n').pop())) {
+        text = `===== recovered from crash-safe storage (previous/partial run) =====\n${persisted}\n===== current session =====\n${live}`;
+      }
+      const blob = new Blob([text], { type: 'text/plain' });
+      download(blob, `wa-export-log${tag ? '_' + tag : ''}_${stamp}.txt`);
+      return Log.lineCount();
+    };
 
     // Collapse
     let collapsed = gmGet('collapsed', false);
@@ -657,9 +721,21 @@
       if (state.running) return;
       state.cancelled = false; setRunning(true);
       state.t0 = Date.now();
+      // Flush the log to crash-safe storage on a timer, independent of logging
+      // activity — so a HUNG run (no new lines) still leaves a fresh snapshot.
+      const flushTimer = setInterval(() => Log.flush(), 3000);
+      let failed = false;
       try { await fn(); }
-      catch (e) { Log.error('Export failed:', e); ui.setStatus('Failed: ' + e.message); }
-      finally { setRunning(false); }
+      catch (e) { failed = true; Log.error('Export failed:', e); ui.setStatus('Failed: ' + e.message); }
+      finally {
+        clearInterval(flushTimer); Log.flush(); setRunning(false);
+        // Auto-save the log on every run end when Debug is on — covers a clean
+        // finish, a Cancel, and a crash, since all three land here.
+        if (state.debug) {
+          const tag = failed ? 'crash' : state.cancelled ? 'cancelled' : 'done';
+          try { saveLog(tag); } catch (e) { Log.warn('auto-save log failed', e); }
+        }
+      }
     };
 
     return {
@@ -674,16 +750,28 @@
         el.current.addEventListener('click', wrap(onCurrent));
         el.cancel.addEventListener('click', () => { state.cancelled = true; ui.setStatus('Cancelling…'); });
         el.savelog.addEventListener('click', () => {
-          const stamp = nowIso().replace(/[:.]/g, '-');
-          const blob = new Blob([Log.getText()], { type: 'text/plain' });
-          download(blob, `wa-export-log_${stamp}.txt`);
-          ui.setStatus(`Saved log (${Log.lineCount()} lines).`);
+          const n = saveLog();
+          ui.setStatus(`Saved log (${n} lines live).`);
         });
       },
       mountDegraded(msg) {
         el.all.disabled = true; el.current.disabled = true;
         this.setBadge('none');
         ui.setStatus(msg || 'WhatsApp internals not found. Reload the page.');
+      },
+      // If a prior run left a crash-safe tail (it never reached a clean finish),
+      // offer it for download so a hung/crashed previous run stays debuggable.
+      offerRecovery() {
+        const persisted = Log.getPersisted();
+        if (!persisted || !persisted.trim()) return;
+        Log.info(`Found a log from a previous unfinished run (${persisted.trim().split('\n').length} lines). Click "Save log" to download it.`);
+        if (state.debug) {
+          const stamp = nowIso().replace(/[:.]/g, '-');
+          try {
+            download(new Blob([persisted], { type: 'text/plain' }), `wa-export-log_recovered_${stamp}.txt`);
+          } catch (e) { Log.warn('recovery auto-save failed', e); }
+        }
+        Log.clearPersisted();
       },
     };
   }
@@ -743,6 +831,7 @@
   // ---------------------------------------------------------------------------
   const panel = Panel();
   mount(panel);
+  panel.offerRecovery();
   panel.ui.setStatus('Waiting for WhatsApp to load…');
 
   if (FORCE === 'dom') {

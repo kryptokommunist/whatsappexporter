@@ -22,6 +22,11 @@ It reads WhatsApp Web's own in-page data models (not the rendered DOM), so the J
 3. The **Rate limit** slider controls the delay between history-page loads. Higher = gentler on WhatsApp (recommended for large accounts); lower = faster.
 4. **Cancel** stops the run and still downloads a `_partial` ZIP of whatever finished.
 5. **Save log** downloads the full run log (`wa-export-log_<timestamp>.txt`) at any time — mid-run, after it finishes, or after a crash. The same log is also bundled as `_log.txt` inside every export ZIP, so a completed run is self-documenting.
+6. **Debug: auto-save log on every run** — tick this and the log is downloaded automatically whenever a run **finishes**, is **cancelled**, or **crashes** (filenames tagged `_done` / `_cancelled` / `_crash`). The setting is remembered, and the `#waexport=dev` URL flag forces it on.
+
+### Crash-safe logging
+
+Exports can hang or crash before they ever get to write a log. To stay debuggable, the script continuously flushes the tail of the run log to the extension's own storage (`GM_setValue`) — throttled, plus a background timer so even a frozen run keeps a fresh snapshot. If a previous run never finished cleanly, the **next time you open WhatsApp Web** the panel reports a recoverable log in its mini-log; click **Save log** to download it (with Debug on, it downloads automatically as `wa-export-log_recovered_<timestamp>.txt`). A clean finish clears this storage so you aren't nagged with stale recoveries.
 
 ### Output
 
@@ -49,7 +54,7 @@ Append to the URL to force a path for testing:
 
 - `web.whatsapp.com/#waexport=raid` — force the moduleRaid fallback.
 - `web.whatsapp.com/#waexport=dom` — force DOM mode (placeholder in 0.1.0).
-- `web.whatsapp.com/#waexport=dev` — verbose console logging + expose `window.__waExport`.
+- `web.whatsapp.com/#waexport=dev` — verbose console logging, auto-save log on every run, and expose `window.__waExport`.
 
 ## Disclaimer
 
