@@ -531,8 +531,8 @@
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 
-  function download(blob, filename) {
-    if (typeof GM_download === 'function') {
+  function download(blob, filename, { saveAs = true } = {}) {
+    if (typeof GM_download === 'function' && saveAs) {
       const url = URL.createObjectURL(blob);
       try {
         GM_download({
@@ -545,6 +545,8 @@
         return;
       } catch { URL.revokeObjectURL(url); }
     }
+    // saveAs:false (or no GM_download) → silent anchor download to the default
+    // folder, so bulk runs don't stack save dialogs on top of WhatsApp's own.
     anchorDownload(blob, filename);
   }
 
@@ -729,6 +731,7 @@
 
   async function exportChatsNative(store, chats, ui) {
     Log.warn('Native export opens each chat and SENDS READ RECEIPTS; WhatsApp names the ZIPs in your downloads folder.');
+    Log.warn('IMPORTANT: turn OFF Chrome → Settings → Downloads → "Ask where to save each file before downloading", or every ZIP opens a Save dialog that pauses the run.');
     ui.setTotal(chats.length);
     const t0 = Date.now();
     const index = {
@@ -769,7 +772,7 @@
 
     const stamp = nowIso().replace(/[:.]/g, '-');
     download(new Blob([JSON.stringify(index, null, 2)], { type: 'application/json' }),
-      `whatsapp-native-export-index${ui.cancelled ? '_partial' : ''}_${stamp}.json`);
+      `whatsapp-native-export-index${ui.cancelled ? '_partial' : ''}_${stamp}.json`, { saveAs: false });
     ui.setStatus(`Native export: ${index.triggeredCount}/${chats.length} chats in ${secs}s. Check your downloads folder.`);
     if (!ui.cancelled) Log.clearPersisted();
   }

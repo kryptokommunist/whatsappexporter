@@ -39,6 +39,7 @@ What you get and the trade-offs:
 - **It sends read receipts.** Opening each chat marks it read — unavoidable in this mode, unlike the read-only JSON mode. A warning is logged at the start of every native run.
 - **English UI only.** It matches the buttons by visible text ("Export chat", "Without media"), so a non-English WhatsApp locale will cause chats to be skipped. Switch WhatsApp Web to English first.
 - Chrome shows a **one-time "Allow multiple downloads"** prompt on the first ZIP of an "all" run — click Allow.
+- ⚠️ **Turn off Chrome's "Ask where to save each file before downloading"** (Settings → Downloads) *before* running. If it's on, Chrome opens a **Save As** dialog for every ZIP — including WhatsApp's own export when clicked by hand — and the run pauses on each one. This is browser chrome the script cannot click; the only fix is the setting. With it off, ZIPs save straight to your download folder and the run flows automatically.
 - The page can't tell when a native download finishes, so pacing is a fixed settle delay — it **reuses the Rate limit slider**. On a slow disk or for very large chats, raise the slider if downloads get dropped.
 
 Per-chat failures are isolated: if a chat's export UI can't be found within a few seconds, it's logged, marked skipped, and the run continues. **Cancel** stops after the current chat and still downloads the partial index.
