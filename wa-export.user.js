@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WhatsApp Web JSON Exporter
 // @namespace    https://github.tools.sap/I771869/whatsappexporter
-// @version      0.2.4
+// @version      0.2.5
 // @description  Export all WhatsApp Web chats as JSON (ZIP) or by automating WhatsApp's native per-chat export.
 // @author       I771869
 // @match        https://web.whatsapp.com/*
@@ -45,7 +45,7 @@
     cmd: 'WAWebCmd',
   };
 
-  const VERSION = '0.2.4';
+  const VERSION = '0.2.5';
   const DEV = /[?#&]waexport=dev/.test(location.href);
   const FORCE = (location.href.match(/[?#&]waexport=(raid|dom)/) || [])[1] || null;
 
@@ -690,9 +690,25 @@
     }, 8000, 200);
   }
 
-  function closeAnyMenu(store) {
+  // Close any open drawer/menu/dialog and wait for it to actually be gone, so a
+  // stale drawer from the previous chat can't poison the next chat's lookup.
+  async function closeAnyMenu(store) {
+    // Dismiss open modals/drawers. Escape twice (dialog, then drawer), plus a
+    // click on any visible modal "close" control if present.
+    dispatchKey('Escape');
+    const closeBtn = document.querySelector('[data-testid="drawer-right"] [data-icon="close"],[data-testid="chat-info-drawer"] [aria-label="Close"]');
+    if (closeBtn && isVisible(closeBtn)) clickReal(closeBtn.closest('[role="button"],button') || closeBtn);
     dispatchKey('Escape');
     try { if (store.Cmd && typeof store.Cmd.closeChat === 'function') store.Cmd.closeChat(); } catch {}
+    // Wait (briefly) for the drawer + any dialog to disappear. Don't throw if it
+    // lingers — just proceed; the per-chat timeout still isolates a bad chat.
+    try {
+      await waitFor(() => {
+        const drawer = document.querySelector('[data-testid="chat-info-drawer"],[data-testid="drawer-right"]');
+        const dialog = document.querySelector('[data-testid="export-chat-modal"],[role="dialog"][aria-modal="true"]');
+        return (!drawer || !isVisible(drawer)) && (!dialog || !isVisible(dialog)) ? true : null;
+      }, 2500, 120);
+    } catch { /* lingered; proceed anyway */ }
   }
 
   // Locate (opening the drawer/menu if needed) the "Export chat" action for the
@@ -700,10 +716,10 @@
   // builds) → header overflow menu (fallback for other builds).
   // One-shot diagnostic: dump what the automation can actually see, so a failed
   // run tells us the real selectors instead of us guessing. Logged once.
-  let domProbed = false;
+  let domProbes = 0;
   function probeExportDom(where) {
-    if (domProbed) return;
-    domProbed = true;
+    if (domProbes >= 4) return;
+    domProbes++;
     try {
       const header = document.querySelector('header[data-testid="conversation-header"]') || document.querySelector('header');
       const btns = Array.from(document.querySelectorAll('[role="button"],button,[data-testid],[aria-label]'))
@@ -853,7 +869,7 @@
         Log.warn(`native export skipped: ${name}`, e.message);
       } finally {
         index.chats.push(rec);
-        closeAnyMenu(store);
+        await closeAnyMenu(store);
         await sleep(CONFIG.chatSleepMs);
       }
     }
