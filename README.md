@@ -21,6 +21,7 @@ It reads WhatsApp Web's own in-page data models (not the rendered DOM), so the J
    - **Export current chat** — exports only the conversation currently open on screen.
 3. The **Rate limit** slider controls the delay between history-page loads. Higher = gentler on WhatsApp (recommended for large accounts); lower = faster.
 4. **Cancel** stops the run and still downloads a `_partial` ZIP of whatever finished.
+5. **Save log** downloads the full run log (`wa-export-log_<timestamp>.txt`) at any time — mid-run, after it finishes, or after a crash. The same log is also bundled as `_log.txt` inside every export ZIP, so a completed run is self-documenting.
 
 ### Output
 
@@ -28,6 +29,7 @@ A ZIP named `whatsapp-export_YYYY-MM-DD.zip` containing:
 
 - One JSON file per chat, named with the **date of the last message** and the **chat/contact name**, e.g. `2026-09-30_Alice-Smith.json`.
 - A `_manifest.json` describing the export (version, timestamp, store source, account, and the chat → filename map).
+- A `_log.txt` with the full run log (every chat processed, warnings, errors) for debugging.
 
 See [`SCHEMA.md`](./SCHEMA.md) for the exact JSON structure, and [`docs/sample-export.json`](./docs/sample-export.json) for a tiny redacted example.
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WhatsApp Web JSON Exporter
 // @namespace    https://github.tools.sap/I771869/whatsappexporter
-// @version      0.1.1
+// @version      0.1.2
 // @description  Export all WhatsApp Web chats + full history as a ZIP of per-chat JSON files.
 // @author       I771869
 // @match        https://web.whatsapp.com/*
@@ -44,7 +44,7 @@
     loadMessages: 'WAWebChatLoadMessages',
   };
 
-  const VERSION = '0.1.1';
+  const VERSION = '0.1.2';
   const DEV = /[?#&]waexport=dev/.test(location.href);
   const FORCE = (location.href.match(/[?#&]waexport=(raid|dom)/) || [])[1] || null;
 
@@ -52,21 +52,30 @@
   const nowIso = () => new Date().toISOString();
 
   // ---------------------------------------------------------------------------
-  // Logger (mirrored into the UI mini-log)
+  // Logger (mirrored into the UI mini-log + an in-memory buffer written to
+  // _log.txt in the export ZIP, so a finished run can be debugged after the fact)
   // ---------------------------------------------------------------------------
   const Log = (() => {
     let sink = null;
+    const buffer = [];
+    const MAX_LINES = 50000; // ring buffer cap so a huge run can't OOM the tab
     const emit = (level, args) => {
-      const line = `[${new Date().toLocaleTimeString()}] ${args.map(stringify).join(' ')}`;
+      const ts = new Date().toISOString();
+      const text = args.map(stringify).join(' ');
+      buffer.push(`${ts} [${level.toUpperCase()}] ${text}`);
+      if (buffer.length > MAX_LINES) buffer.splice(0, buffer.length - MAX_LINES);
+      const line = `[${new Date().toLocaleTimeString()}] ${text}`;
       if (sink) sink(level, line);
       if (DEV || level === 'error') console[level === 'warn' ? 'warn' : level === 'error' ? 'error' : 'log']('[wa-export]', ...args);
     };
-    const stringify = (a) => (a instanceof Error ? a.message : typeof a === 'object' ? safeJson(a) : String(a));
+    const stringify = (a) => (a instanceof Error ? (a.stack || a.message) : typeof a === 'object' ? safeJson(a) : String(a));
     return {
       setSink: (fn) => { sink = fn; },
       info: (...a) => emit('info', a),
       warn: (...a) => emit('warn', a),
       error: (...a) => emit('error', a),
+      getText: () => buffer.join('\n') + '\n',
+      lineCount: () => buffer.length,
     };
   })();
 
@@ -474,15 +483,19 @@
     manifest.cancelled = ui.cancelled;
     zip.file('_manifest.json', JSON.stringify(manifest, null, 2));
 
+    const secs = Math.round((Date.now() - t0) / 1000);
+    Log.info(`Export complete: ${manifest.exportedChatCount} chats, ${secs}s`);
+
+    // Bundle the full run log so the export can be debugged after the fact.
+    zip.file('_log.txt', Log.getText());
+
     ui.setStatus('Building ZIP…');
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
     const stamp = dateStamp(Math.floor(Date.now() / 1000));
     const zipName = `whatsapp-export_${stamp}${ui.cancelled ? '_partial' : ''}.zip`;
     download(blob, zipName);
 
-    const secs = Math.round((Date.now() - t0) / 1000);
     ui.setStatus(`Done — ${manifest.exportedChatCount} chats in ${secs}s → ${zipName}`);
-    Log.info(`Export complete: ${manifest.exportedChatCount} chats, ${secs}s`);
   }
 
   async function exportAll(store, ui) {
@@ -551,7 +564,10 @@
         <div class="body" id="body">
           <button class="act primary" id="all">Export all chats</button>
           <button class="act" id="current">Export current chat</button>
-          <button class="act" id="cancel" disabled>Cancel</button>
+          <div class="row">
+            <button class="act" id="cancel" disabled>Cancel</button>
+            <button class="act" id="savelog" title="Download the run log so far (also bundled as _log.txt in each export)">Save log</button>
+          </div>
           <label class="rate">Rate limit between pages: <span id="rateval">250</span> ms
             <input type="range" id="rate" min="0" max="1500" step="50" value="250">
           </label>
@@ -564,7 +580,7 @@
     const $ = (id) => root.getElementById(id);
     const el = {
       badge: $('badge'), body: $('body'), collapse: $('collapse'),
-      all: $('all'), current: $('current'), cancel: $('cancel'),
+      all: $('all'), current: $('current'), cancel: $('cancel'), savelog: $('savelog'),
       rate: $('rate'), rateval: $('rateval'),
       prog: $('prog'), status: $('status'), log: $('log'),
     };
@@ -657,6 +673,12 @@
         el.all.addEventListener('click', wrap(onAll));
         el.current.addEventListener('click', wrap(onCurrent));
         el.cancel.addEventListener('click', () => { state.cancelled = true; ui.setStatus('Cancelling…'); });
+        el.savelog.addEventListener('click', () => {
+          const stamp = nowIso().replace(/[:.]/g, '-');
+          const blob = new Blob([Log.getText()], { type: 'text/plain' });
+          download(blob, `wa-export-log_${stamp}.txt`);
+          ui.setStatus(`Saved log (${Log.lineCount()} lines).`);
+        });
       },
       mountDegraded(msg) {
         el.all.disabled = true; el.current.disabled = true;
